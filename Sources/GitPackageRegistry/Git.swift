@@ -44,18 +44,11 @@ struct Repository {
     }
 
     /// Creates an archive and returns its checksum
-    func archive(to archivePath: URL) -> Result<String, GitError> {
+    func archive(to archivePath: URL) -> Result<(), GitError> {
         runCommand(
             "swift",
             ["package", "archive-source", "-o", archivePath.path]
-        ).flatMap { _ in
-            runCommand(
-                "shasum",
-                ["-a", "256", "-b", archivePath.path]
-            )
-        }.map { output in
-            String(output.split(separator: " ")[0])
-        }
+        ).map(Self.toVoid)
     }
 }
 

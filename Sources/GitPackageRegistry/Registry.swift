@@ -1,8 +1,10 @@
 import Foundation
+import SHA2
 
 enum RegistryError: LocalizedError {
     case noSuchPackage(scope: String, name: String)
     case failedToLocateTag(release: String)
+    case failedToReadArchive(Error)
     case gitError(GitError)
 }
 
@@ -64,17 +66,34 @@ struct Registry {
         }
     }
 
+    func checksum(of file: URL) -> Result<String, RegistryError> {
+        do {
+            let data = try Data(contentsOf: file)
+            return .success(SHA256(hashing: data).hex)
+        } catch {
+            return .failure(.failedToReadArchive(error))
+        }
+    }
+
     func archive(_ package: Package, _ version: String) -> Result<SourceArchive, RegistryError> {
         let file = "\(package.scope).\(package.name)-\(version).zip"
         let archivePath = archivesDirectory.appendingPathComponent(file)
-        
+
+        if FileManager.default.fileExists(atPath: archivePath.path) {
+            return checksum(of: archivePath).map { checksum in
+                SourceArchive(
+                    path: archivePath,
+                    checksum: checksum
+                )
+            }
+        }
+
         // No need to fetch the tags first because this endpoint won't get requested unless we've already
         // told the client about the tag.
         let repository = repository(package)
         return repository.listTags()
             .mapError(RegistryError.gitError)
             .flatMap { tags in
-                print(tags)
                 let result = tags.last { tag in
                     tag.contains(version)
                 }
@@ -85,6 +104,9 @@ struct Registry {
             }
             .flatMap { _ in
                 repository.archive(to: archivePath).mapError(RegistryError.gitError)
+            }
+            .flatMap { _ in
+                checksum(of: archivePath)
             }
             .map { checksum in
                 SourceArchive(path: archivePath, checksum: checksum)

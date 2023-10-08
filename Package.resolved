@@ -82,6 +82,15 @@
       }
     },
     {
+      "identity" : "swift-hash",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tayloraswift/swift-hash.git",
+      "state" : {
+        "revision" : "c7ba0cde5eb63042c2196b02b65a770101c1ac11",
+        "version" : "0.5.0"
+      }
+    },
+    {
       "identity" : "swift-log",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-log.git",
