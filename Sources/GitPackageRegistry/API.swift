@@ -1,4 +1,5 @@
 import Vapor
+import SHA2
 
 public struct APIError: LocalizedError, ResponseEncodable {
     var status: HTTPResponseStatus
@@ -287,6 +288,10 @@ extension API {
     func getReleaseDetails(
         _ scope: String, _ name: String, _ version: String
     ) -> APIResult<Release, [String: String?]> {
+        guard let package = registry.package(scope, name) else {
+            return Self.notFound("non-existent package")
+        }
+    
         let releases: Registry.Releases
         switch registry.releases(scope, name) {
             case .failure(.noSuchPackage):
@@ -300,6 +305,14 @@ extension API {
         guard releases.contains(version) else {
             return Self.notFound("non-existent release")
         }
+
+        let checksum: SHA2.SHA256
+        switch registry.archive(package, version) {
+            case let .failure(error):
+                return Self.internalServerError(error.localizedDescription)
+            case let .success(archive):
+                checksum = archive.checksum
+        }
         
         // Get release details
         return .success(APIResponse(
@@ -310,7 +323,7 @@ extension API {
                     Resource(
                         name: "source-archive",
                         type: "application/zip",
-                        checksum: "0"
+                        checksum: checksum.hex
                     )
                 ],
                 metadata: [:],
@@ -348,6 +361,7 @@ extension API {
                 return .success(APIResponse(
                     data,
                     additionalHeaders: [
+                        ("Digest", "sha-256=\(archive.checksum.base64String())"),
                         ("Content-Type", "application/zip"),
                         ("Cache-Control", "public, immutable"),
                     ]

@@ -66,10 +66,10 @@ struct Registry {
         }
     }
 
-    func checksum(of file: URL) -> Result<String, RegistryError> {
+    func checksum(of file: URL) -> Result<SHA256, RegistryError> {
         do {
             let data = try Data(contentsOf: file)
-            return .success(SHA256(hashing: data).hex)
+            return .success(SHA256(hashing: data))
         } catch {
             return .failure(.failedToReadArchive(error))
         }
@@ -162,6 +162,6 @@ extension Registry {
 
     struct SourceArchive {
         var path: URL
-        var checksum: String
+        var checksum: SHA256
     }
 }
