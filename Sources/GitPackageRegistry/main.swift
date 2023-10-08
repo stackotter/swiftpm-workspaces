@@ -18,80 +18,65 @@ public struct APIError: LocalizedError {
 struct Package {
     var path: String
     var repository: String
+    var releases: [String]
+
+    func releaseBefore(_ version: String) -> String? {
+        guard
+            let index = releases.firstIndex(of: version),
+            index - 1 >= 0
+        else {
+            return nil
+        }
+
+        return releases[index - 1]
+    }
+
+    func releaseAfter(_ version: String) -> String? {
+        guard
+            let index = releases.firstIndex(of: version),
+            index + 1 < releases.count
+        else {
+            return nil
+        }
+
+        return releases[index + 1]
+    }
 }
 
-var scopes = [
-    "scui": [
-        "swift-cross-ui": Package(path: "/", repository: "https://github.com/stackotter/swift-cross-ui"),
-        "gtk-backend": Package(path: "/Sources/GtkBackend", repository: "https://github.com/stackotter/swift-cross-ui")
-    ]
-]
+struct Scope {
+    var packages: [String: Package]
+}
 
-// Define a type that conforms to the generated protocol.
-// func listPackageReleases(
-//     _ input: Operations.listPackageReleases.Input
-// ) async throws -> Operations.listPackageReleases.Output {
-//     guard let scope = scopes[input.scope] else {
-//         throw APIError("non-existent scope")
-//     }
+struct Registry {
+    var scopes: [String: Scope]
 
-//     guard let package = scope[input.name] else {
-//         throw APIError("non-existent package")
-//     }
+    func package(_ scope: String, _ name: String) -> Package? {
+        scopes[scope]?.packages[name]
+    }
 
-//     let response = OpenAPIObjectContainer()
-//     return .ok(.init(headers: .init(Content_hyphen_Version: ._1), .json(.init(releases: response))))
-// }
+    func releaseExists(_ scope: String, _ name: String, _ version: String) -> Bool {
+        guard let package = package(scope, name) else {
+            return false
+        }
 
-// /// Fetch release metadata
-// ///
-// /// - Remark: HTTP `GET /{scope}/{name}/{version}`.
-// /// - Remark: Generated from `#/paths//{scope}/{name}/{version}/get(fetchReleaseMetadata)`.
-// func fetchReleaseMetadata(
-//     _ input: Operations.fetchReleaseMetadata.Input
-// ) async throws -> Operations.fetchReleaseMetadata.Output {
-//     throw APIError("unimplemented")
-// }
+        return package.releases.contains(version)
+    }
+}
 
-// /// Publish package release
-// ///
-// /// - Remark: HTTP `PUT /{scope}/{name}/{version}`.
-// /// - Remark: Generated from `#/paths//{scope}/{name}/{version}/put(publishPackageRelease)`.
-// func publishPackageRelease(
-//     _ input: Operations.publishPackageRelease.Input
-// ) async throws -> Operations.publishPackageRelease.Output {
-//     throw APIError("unimplemented")
-// }
-
-// /// Fetch manifest for a package release
-// ///
-// /// - Remark: HTTP `GET /{scope}/{name}/{version}/Package.swift`.
-// /// - Remark: Generated from `#/paths//{scope}/{name}/{version}/Package.swift/get(fetchManifestForPackageRelease)`.
-// func fetchManifestForPackageRelease(
-//     _ input: Operations.fetchManifestForPackageRelease.Input
-// ) async throws -> Operations.fetchManifestForPackageRelease.Output {
-//     throw APIError("unimplemented")
-// }
-
-// /// Download source archive
-// ///
-// /// - Remark: HTTP `GET /{scope}/{name}/{version}.zip`.
-// /// - Remark: Generated from `#/paths//{scope}/{name}/{version}.zip/get(downloadSourceArchive)`.
-// func downloadSourceArchive(
-//     _ input: Operations.downloadSourceArchive.Input
-// ) async throws -> Operations.downloadSourceArchive.Output {
-//     throw APIError("unimplemented")
-// }
-
-// /// Lookup package identifiers registered for a URL
-// ///
-// /// - Remark: HTTP `GET /identifiers`.
-// /// - Remark: Generated from `#/paths//identifiers/get(lookupPackageIdentifiersByURL)`.
-// func lookupPackageIdentifiersByURL(
-//     _ input: Operations.lookupPackageIdentifiersByURL.Input
-// ) async throws -> Operations.lookupPackageIdentifiersByURL.Output {
-//     throw APIError("unimplemented")
-// }
+var registry = Registry(scopes: [
+    "scui": Scope(packages: [
+        "swift-cross-ui": Package(
+            path: "/",
+            repository: "https://github.com/stackotter/swift-cross-ui",
+            releases: ["0.1.0", "0.2.0", "0.3.0"]
+        ),
+        "gtk-backend": Package(
+            path: "/Sources/GtkBackend",
+            repository: "https://github.com/stackotter/swift-cross-ui",
+            releases: ["0.1.0", "0.2.0", "0.3.0"]
+        )
+    ])
+])
 
 func jsonResponse(_ status: HTTPResponseStatus = .accepted, _ object: Any) -> Response {
     var headers = HTTPHeaders()
@@ -128,76 +113,6 @@ func badRequest<T>(_ details: String) -> Result<T, APIError> {
     .failure(APIError(.badRequest, details))
 }
 
-let app = Vapor.Application()
-
-struct Problem: Content {
-    var status: Int
-    var title: String
-    var detail: String
-}
-
-struct ReleaseSummary: Content {
-    /// If not provided, the client will infer it.
-    var url: String?
-    /// If provided, the client will ignore the release during package resolution.
-    var problem: Problem?
-}
-
-struct Releases: Content {
-    var releases: [String: ReleaseSummary]
-
-    init(_ releases: [String: ReleaseSummary]) {
-        self.releases = releases
-    }
-}
-
-typealias APIResult<T: Content, L: ToLinks> = Result<APIResponse<T, L>, APIError>
-
-app.get(":scope", ":name") { req -> APIResult<Releases, [String: String?]> in
-    let scope = req.parameters.get("scope")!
-    let name = req.parameters.get("name")!
-
-    
-    guard let registryScope = scopes[scope] else {
-        return badRequest("Non-existent scope")
-    }
-
-    guard let package = registryScope[name] else {
-        return badRequest("Non-existent package")
-    }
-
-    return .success(APIResponse(
-        Releases(["0.1.0": ReleaseSummary()]),
-        links: [
-            "latest-version": "0.1.0",
-            "canonical": package.repository,
-            "payment": "https://github.com/sponsors/stackotter"
-        ]
-    ))
-}
-
-struct Resource: Content {
-    var name: String
-    var type: String
-    var checksum: String
-    var signing: Signing
-}
-
-extension Resource {
-    struct Signing: Content {
-        var signatureBase64Encoded: String
-        var signatureFormat: String
-    }
-}
-
-struct Release: Content {
-    var id: String
-    var version: String
-    var resources: [Resource]
-    var metadata: [String: String]
-    var publishedAt: Date?
-}
-
 protocol ToLinks {
     var links: [(relation: String, link: String)] { get }
 }
@@ -218,7 +133,10 @@ struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable 
     }
 
     func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
-        var headers: [(String, String)] = []
+        var headers: [(String, String)] = [
+            ("Content-Type", "application/json")
+        ]
+
         if let links {
             let linkContent = links.links.map { (key, link) in
                 "<\(link)>; rel=\"\(key)\""
@@ -237,26 +155,114 @@ struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable 
     }
 }
 
-app.get(":scope", ":name", ":version") { req -> APIResult<Release, [String: String?]> in
-    let scope = req.parameters.get("scope")!
-    let name = req.parameters.get("name")!
-    let version = req.parameters.get("version")!
+typealias APIResult<T: Content, L: ToLinks> = Result<APIResponse<T, L>, APIError>
 
-    return .success(APIResponse(
-        Release(
-            id: "\(scope).\(name)",
-            version: version,
-            resources: [],
-            metadata: [:],
-            publishedAt: Date()
-        ),
-        links: [
-            "latest-version": "0.1.0",
-            "successor-version": nil,
-            "predecessor-version": nil
-        ]
-    ))
+enum API {
+    struct Problem: Content {
+        var status: Int
+        var title: String
+        var detail: String
+    }
+
+    struct ReleaseSummary: Content {
+        /// If not provided, the client will infer it.
+        var url: String?
+        /// If provided, the client will ignore the release during package resolution.
+        var problem: Problem?
+    }
+
+    struct Releases: Content {
+        var releases: [String: ReleaseSummary]
+
+        init(_ releases: [String: ReleaseSummary]) {
+            self.releases = releases
+        }
+    }
+
+    struct Resource: Content {
+        var name: String
+        var type: String
+        var checksum: String
+        var signing: Signing?
+    }
+
+    struct Signing: Content {
+        var signatureBase64Encoded: String
+        var signatureFormat: String
+    }
+
+    struct Release: Content {
+        var id: String
+        var version: String
+        var resources: [Resource]
+        var metadata: [String: String]
+        var publishedAt: Date?
+    }
+
+    static func listPackageReleases(_ req: Request) -> APIResult<Releases, [String: String?]> {
+        let scope = req.parameters.get("scope")!
+        let name = req.parameters.get("name")!
+    
+        guard let package = registry.package(scope, name) else {
+            return badRequest("Non-existent package")
+        }
+
+        var releases: [String: ReleaseSummary] = [:]
+        for release in package.releases {
+            releases[release] = ReleaseSummary()
+        }
+
+        return .success(APIResponse(
+            Releases(releases),
+            links: [
+                "latest-version": package.releases.last,
+                "canonical": package.repository,
+                "payment": "https://github.com/sponsors/stackotter"
+            ]
+        ))
+    }
+
+    static func getReleaseDetails(_ req: Request) -> APIResult<Release, [String: String?]> {
+        let scope = req.parameters.get("scope")!
+        let name = req.parameters.get("name")!
+        let version = req.parameters.get("version")!
+
+
+        guard let package = registry.package(scope, name) else {
+            return .failure(APIError(.notFound, "non-existent package"))
+        }
+
+        guard package.releases.contains(version) else {
+            return .failure(APIError(.notFound, "non-existent release"))
+        }
+
+        return .success(APIResponse(
+            Release(
+                id: "\(scope).\(name)",
+                version: version,
+                resources: [
+                    Resource(
+                        name: "source-archive",
+                        type: "application/zip",
+                        checksum: "0"
+                    )
+                ],
+                metadata: [:],
+                publishedAt: nil
+            ),
+            links: [
+                "latest-version": package.releases.last,
+                "successor-version": package.releaseAfter(version),
+                "predecessor-version": package.releaseBefore(version)
+            ]
+        ))
+    }
 }
+
+let app = Vapor.Application()
+
+app.get(":scope", ":name", use: API.listPackageReleases)
+app.get(":scope", ":name", ":version", use: API.getReleaseDetails)
 
 // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
 try app.run()
