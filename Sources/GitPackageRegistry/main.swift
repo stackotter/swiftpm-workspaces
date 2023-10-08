@@ -17,13 +17,13 @@ public struct APIError: LocalizedError {
 
 struct Package {
     var path: String
+    var repository: String
 }
 
 var scopes = [
     "scui": [
-        "swift-cross-ui": Package(path: "/"),
-        "gtk-backend": Package(path: "/"),
-        "": Package(path: "/"),
+        "swift-cross-ui": Package(path: "/", repository: "https://github.com/stackotter/swift-cross-ui"),
+        "gtk-backend": Package(path: "/Sources/GtkBackend", repository: "https://github.com/stackotter/swift-cross-ui")
     ]
 ]
 
@@ -124,12 +124,79 @@ extension Result: ResponseEncodable where Success: ResponseEncodable, Failure ==
     }
 }
 
-let app = Vapor.Application()
-
-app.get(":scope", ":name") { req -> Result<String, APIError> in
-    print("scope:", req.parameters.get("scope")!)
-    print("name:", req.parameters.get("name")!)
-    return .failure(APIError(.notFound, "Not found"))
+func badRequest<T>(_ details: String) -> Result<T, APIError> {
+    .failure(APIError(.badRequest, details))
 }
 
+let app = Vapor.Application()
+
+struct Problem: Content {
+    var status: Int
+    var title: String
+    var detail: String
+}
+
+struct Release: Content {
+    /// If not provided, the client will infer it.
+    var url: String?
+    /// If provided, the client will ignore the release during package resolution.
+    var problem: Problem?
+}
+
+struct Releases: Content {
+    var releases: [String: Release]
+
+    init(_ releases: [String: Release]) {
+        self.releases = releases
+    }
+}
+
+struct ReleasesResponse: ResponseEncodable {
+    var releases: Releases
+    var latestVersion: String?
+    var sourceRepository: String?
+    var payment: String?
+
+    func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
+        let body = try! JSONEncoder().encode(releases)
+
+        let links: [String: String] = [
+            "latest-version": latestVersion,
+            "canonical": sourceRepository,
+            "payment": payment
+        ].compactMapValues({ $0 })
+
+        let linkContent = links.map { key, link in
+            "<\(link)>; rel=\"\(key)\""
+        }.joined(separator: ", ")
+
+        return request.eventLoop.makeSucceededFuture(Response(
+            headers: ["Link": linkContent],
+            body: .init(data: body)
+        ))
+    }
+}
+
+app.get(":scope", ":name") { req -> Result<ReleasesResponse, APIError> in
+    let scope = req.parameters.get("scope")!
+    let name = req.parameters.get("name")!
+
+    
+    guard let registryScope = scopes[scope] else {
+        return badRequest("Non-existent scope")
+    }
+
+    guard let package = registryScope[name] else {
+        return badRequest("Non-existent package")
+    }
+
+    return .success(ReleasesResponse(
+        releases: Releases(["0.1.0": Release()]),
+        latestVersion: "0.1.0",
+        sourceRepository: package.repository,
+        payment: "https://github.com/sponsors/stackotter"
+    ))
+}
+
+// TODO: All routes should allow `.json` to be appended to the URL for whatever reason
 try app.run()
