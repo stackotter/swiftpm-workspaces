@@ -284,27 +284,6 @@ extension API {
         }
     }
 
-    func getSourceArchive(
-        _ scope: String, _ name: String, _ version: String
-    ) -> APIResult<Data, NoLinks> {
-        switch registry.releaseExists(scope, name, version) {
-            case .failure(.noSuchPackage):
-                return Self.notFound("non-existent release")
-            case let .failure(error):
-                return Self.internalServerError(error.localizedDescription)
-            default:
-                break
-        }
-        
-        return .success(APIResponse(
-            "dummy".data(using: .utf8)!,
-            additionalHeaders: [
-                ("Content-Type", "application/zip"),
-                ("Cache-Control", "public, immutable"),
-            ]
-        ))
-    }
-
     func getReleaseDetails(
         _ scope: String, _ name: String, _ version: String
     ) -> APIResult<Release, [String: String?]> {
@@ -343,6 +322,37 @@ extension API {
                 "predecessor-version": releases.releaseBefore(version)
             ]
         ))
+    }
+
+    func getSourceArchive(
+        _ scope: String, _ name: String, _ version: String
+    ) -> APIResult<Data, NoLinks> {
+        guard let package = registry.package(scope, name) else {
+            return Self.notFound("non-existent release")
+        }
+        
+        return registry.archive(package, version)
+            .mapError { error in
+                print(error)
+                return APIError(.internalServerError, "failed to create source archive: \(error)")
+            }
+            .flatMap { archive in
+                let data: Data
+                do {
+                    data = try Data(contentsOf: archive.path)
+                } catch {
+                    print(error)
+                    return Self.internalServerError("failed to read source archive")
+                }
+
+                return .success(APIResponse(
+                    data,
+                    additionalHeaders: [
+                        ("Content-Type", "application/zip"),
+                        ("Cache-Control", "public, immutable"),
+                    ]
+                ))
+            }
     }
 
     func getReleaseManifest(_ req: Request) -> APIResult<Data, NoLinks> {

@@ -42,25 +42,51 @@ struct Repository {
             tags.compactMap(Version.init(tolerant:)).map(\.description)
         }
     }
+
+    /// Creates an archive and returns its checksum
+    func archive(to archivePath: URL) -> Result<String, GitError> {
+        runCommand(
+            "swift",
+            ["package", "archive-source", "-o", archivePath.path]
+        ).flatMap { _ in
+            runCommand(
+                "shasum",
+                ["-a", "256", "-b", archivePath.path]
+            )
+        }.map { output in
+            String(output.split(separator: " ")[0])
+        }
+    }
 }
 
 extension Repository {
-    private func runSubcommand(
+    private func runGitSubcommand(
         _ subcommand: String,
+        _ arguments: [String] = [],
+        workingDirectory: URL? = nil
+    ) -> Result<String, GitError> {
+        runCommand(
+            "git",
+            [subcommand] + arguments,
+            workingDirectory: workingDirectory
+        )
+    }
+
+    private func runCommand(
+        _ command: String,
         _ arguments: [String] = [],
         workingDirectory: URL? = nil
     ) -> Result<String, GitError> {
         let pipe = Pipe()
         let process = Process()        
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", subcommand] + arguments
+        process.arguments = [command] + arguments
         process.standardOutput = pipe
         process.currentDirectoryURL = workingDirectory ?? localRepository
 
         do {
             try process.run()
         } catch {
-            print(subcommand, arguments)
             return .failure(.failedToRunProcess(error))
         }
 
@@ -83,7 +109,7 @@ extension Repository {
     private static func toVoid<T>(_ value: T) {}
 
     private func clone() -> Result<(), GitError> {
-        runSubcommand(
+        runGitSubcommand(
             "clone",
             [remoteRepository.absoluteString, localRepository.path],
             workingDirectory: URL(fileURLWithPath: ".")
@@ -91,16 +117,20 @@ extension Repository {
     }
 
     private func pull() -> Result<(), GitError> {
-        runSubcommand("pull").map(Self.toVoid)
+        runGitSubcommand("pull").map(Self.toVoid)
     }
 
     private func fetchTags() -> Result<(), GitError> {
-        runSubcommand("fetch", ["--tags"]).map(Self.toVoid)
+        runGitSubcommand("fetch", ["--tags"]).map(Self.toVoid)
     }
 
-    private func listTags() -> Result<[String], GitError> {
-        runSubcommand("tag", ["--list"]).map { output in
+    func listTags() -> Result<[String], GitError> {
+        runGitSubcommand("tag", ["--list"]).map { output in
             output.split(separator: "\n").map(String.init)
         }
+    }
+
+    func checkout(_ ref: String) -> Result<(), GitError> {
+        runGitSubcommand("checkout", [ref]).map(Self.toVoid)
     }
 }

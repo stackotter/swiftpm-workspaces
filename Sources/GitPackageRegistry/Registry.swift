@@ -2,12 +2,17 @@ import Foundation
 
 enum RegistryError: LocalizedError {
     case noSuchPackage(scope: String, name: String)
+    case failedToLocateTag(release: String)
     case gitError(GitError)
 }
 
 struct Registry {
     var root: URL
     var scopes: [String: Scope]
+
+    var archivesDirectory: URL {
+        root.appendingPathComponent("archives")
+    }
 
     init(root: URL, scopes: [String: Scope]) throws {
         if !FileManager.default.fileExists(atPath: root.path) {
@@ -19,6 +24,13 @@ struct Registry {
 
         self.root = root
         self.scopes = scopes
+
+        if !FileManager.default.fileExists(atPath: archivesDirectory.path) {
+            try FileManager.default.createDirectory(
+                at: archivesDirectory,
+                withIntermediateDirectories: true
+            )
+        }
     }
 
     func package(_ scope: String, _ name: String) -> Package? {
@@ -26,13 +38,15 @@ struct Registry {
     }
 
     func repository(_ scope: String, _ name: String) -> Repository? {
-        package(scope, name).map { package in
-            // TODO: Share repository between packages that have the same backing repository
-            return Repository(
-                remote: package.repository,
-                local: root.appendingPathComponent("\(scope).\(name)")
-            )
-        }
+        package(scope, name).map(repository)
+    }
+
+    func repository(_ package: Package) -> Repository {
+        // TODO: Share repository between packages that have the same backing repository
+        return Repository(
+            remote: package.repository,
+            local: root.appendingPathComponent("\(package.scope).\(package.name)")
+        )
     }
 
     func releases(_ scope: String, _ name: String) -> Result<Releases, RegistryError> {
@@ -49,10 +63,39 @@ struct Registry {
             releases.contains(version)
         }
     }
+
+    func archive(_ package: Package, _ version: String) -> Result<SourceArchive, RegistryError> {
+        let file = "\(package.scope).\(package.name)-\(version).zip"
+        let archivePath = archivesDirectory.appendingPathComponent(file)
+        
+        // No need to fetch the tags first because this endpoint won't get requested unless we've already
+        // told the client about the tag.
+        let repository = repository(package)
+        return repository.listTags()
+            .mapError(RegistryError.gitError)
+            .flatMap { tags in
+                print(tags)
+                let result = tags.last { tag in
+                    tag.contains(version)
+                }
+                return result.map(Result.success) ?? .failure(.failedToLocateTag(release: version))
+            }
+            .flatMap { tag in
+                repository.checkout(tag).mapError(RegistryError.gitError)
+            }
+            .flatMap { _ in
+                repository.archive(to: archivePath).mapError(RegistryError.gitError)
+            }
+            .map { checksum in
+                SourceArchive(path: archivePath, checksum: checksum)
+            }
+    }
 }
 
 extension Registry {
     struct Package {
+        var scope: String
+        var name: String
         var path: String
         var repository: URL
     }
@@ -93,5 +136,10 @@ extension Registry {
         func contains(_ release: String) -> Bool {
             releases.contains(release)
         }
+    }
+
+    struct SourceArchive {
+        var path: URL
+        var checksum: String
     }
 }
