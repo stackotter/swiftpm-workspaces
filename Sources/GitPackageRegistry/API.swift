@@ -173,13 +173,15 @@ extension API {
         }
 
         init(from decoder: Decoder) throws {
-            releases = try decoder.singleValueContainer()
-                .decode([String: ReleaseSummary].self)
+            let container = try decoder.container(keyedBy: String.self)
+            releases = try container
+                .decode([String: ReleaseSummary].self, forKey: "releases")
                 .map { ($0, $1) }
         }
 
         func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: String.self)
+            var outerContainer = encoder.container(keyedBy: String.self)
+            var container = outerContainer.nestedContainer(keyedBy: String.self, forKey: "releases")
             for (version, summary) in releases {
                 try container.encode(summary, forKey: version)
             }
@@ -385,19 +387,22 @@ extension API {
                 break
         }
 
+        // TODO: Update registry api to avoid all the double error handling (once above and now again)
+        guard let package = registry.package(scope, name) else {
+            return Self.notFound("non-existent package")
+        }
+
+        let manifest: Data
+        switch registry.getReleaseManifestContents(package, version) {
+            case let .failure(error):
+                print(error)
+                return Self.internalServerError("malformed package")
+            case let .success(content):
+                manifest = content
+        }
+
         return .success(APIResponse(
-            """
-            // swift-tools-version: 5.9
-
-            import PackageDescription
-
-            let package = Package(
-                name: "dummy",
-                targets: [
-                    .executableTarget(name: "Dummy")
-                ]
-            )
-            """.data(using: .utf8)!,
+            manifest,
             additionalHeaders: [
                 ("Content-Type", "text/x-swift"),
                 ("Content-Disposition", "attachment; filename=\"Package.swift\"")

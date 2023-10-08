@@ -4,14 +4,17 @@ import Version
 enum GitError: LocalizedError {
     case failedToRunProcess(Error)
     case failedToReadStdout(Error)
+    case failedToLocateTag(release: String)
     case invalidUTF8(Data)
     
     var errorDescription: String? {
         switch self {
-            case .failedToRunProcess(let error):
+            case let .failedToRunProcess(error):
                 "Failed to run 'git' command: \(error)"
-            case .failedToReadStdout(let error):
+            case let .failedToReadStdout(error):
                 "Failed to read output of 'git' command: \(error)"
+            case let .failedToLocateTag(release):
+                "Failed to locate tag for release '\(release)'"
             case .invalidUTF8:
                 "The output of the 'git' command contained invalid utf8 data"
         }
@@ -51,6 +54,19 @@ struct Repository {
             ["package", "archive-source", "-o", archivePath.path],
             workingDirectory: localRepository.appendingPathComponent(relativePath)
         ).map(Self.toVoid)
+    }
+
+    func checkoutRelease(_ version: String) -> Result<(), GitError> {
+        listTags()
+            .flatMap { tags in
+                let result = tags.last { tag in
+                    tag.contains(version)
+                }
+                return result.map(Result.success) ?? .failure(.failedToLocateTag(release: version))
+            }
+            .flatMap { tag in
+                checkout(tag)
+            }
     }
 }
 

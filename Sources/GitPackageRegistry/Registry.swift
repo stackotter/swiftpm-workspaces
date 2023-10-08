@@ -3,8 +3,8 @@ import SHA2
 
 enum RegistryError: LocalizedError {
     case noSuchPackage(scope: String, name: String)
-    case failedToLocateTag(release: String)
     case failedToReadArchive(Error)
+    case failedToReadManifest(Error)
     case gitError(GitError)
 }
 
@@ -91,17 +91,8 @@ struct Registry {
         // No need to fetch the tags first because this endpoint won't get requested unless we've already
         // told the client about the tag.
         let repository = repository(package)
-        return repository.listTags()
+        return repository.checkoutRelease(version)
             .mapError(RegistryError.gitError)
-            .flatMap { tags in
-                let result = tags.last { tag in
-                    tag.contains(version)
-                }
-                return result.map(Result.success) ?? .failure(.failedToLocateTag(release: version))
-            }
-            .flatMap { tag in
-                repository.checkout(tag).mapError(RegistryError.gitError)
-            }
             .flatMap { _ in
                 repository.archive(package.path, to: archivePath).mapError(RegistryError.gitError)
             }
@@ -111,6 +102,28 @@ struct Registry {
             .map { checksum in
                 SourceArchive(path: archivePath, checksum: checksum)
             }
+    }
+
+    func getReleaseManifestContents(_ package: Package, _ version: String) -> Result<Data, RegistryError> {
+        let repository = repository(package)
+
+        let result = repository.checkoutRelease(version)
+        if case let .failure(error) = result {
+            return .failure(.gitError(error))
+        }
+
+        let manifest = repository.localRepository
+            .appendingPathComponent(package.path)
+            .appendingPathComponent("Package.swift")
+
+        let content: Data
+        do {
+            content = try Data(contentsOf: manifest)
+        } catch {
+            return .failure(.failedToReadManifest(error))
+        }
+        
+        return .success(content)
     }
 }
 
