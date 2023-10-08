@@ -123,19 +123,26 @@ extension Dictionary<String, String?>: ToLinks {
     }
 }
 
+struct NoLinks: ToLinks {
+    var links: [(relation: String, link: String)] {
+        []
+    }
+}
+
 struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable {
     var content: ResponseContent
     var links: Links?
+    var additionalHeaders: [(String, String)]
 
-    init(_ content: ResponseContent, links: Links? = nil) {
+    init(_ content: ResponseContent, links: Links? = nil, additionalHeaders: [(String, String)] = []) {
         self.content = content
         self.links = links
+        self.additionalHeaders = additionalHeaders
     }
 
     func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
-        var headers: [(String, String)] = [
-            ("Content-Type", "application/json")
-        ]
+        var headers = additionalHeaders
+        headers.append(("Content-Version", "1"))
 
         if let links {
             let linkContent = links.links.map { (key, link) in
@@ -144,13 +151,20 @@ struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable 
             headers.append(("Link", linkContent))
         }
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let body = try! encoder.encode(content)
+        let body: Response.Body
+
+        if let content = content as? String {
+            body = Response.Body(string: content)
+        } else {
+            headers.append(("Content-Type", "application/json"))
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            body = try! Response.Body(data: encoder.encode(content))
+        }
 
         return request.eventLoop.makeSucceededFuture(Response(
             headers: HTTPHeaders(headers),
-            body: Response.Body(data: body)
+            body: body
         ))
     }
 }
@@ -257,12 +271,42 @@ enum API {
             ]
         ))
     }
+
+    static func getReleaseManifest(_ req: Request) -> APIResult<String, NoLinks> {
+        let scope = req.parameters.get("scope")!
+        let name = req.parameters.get("name")!
+        let version = req.parameters.get("version")!
+
+        guard registry.releaseExists(scope, name, version) else {
+            return .failure(APIError(.notFound, "non-existent release"))
+        }
+
+        return .success(APIResponse(
+            """
+            // swift-tools-version: 5.9
+
+            import PackageDescription
+
+            let package = Package(
+                name: "dummy",
+                targets: [
+                    .executableTarget(name: "Dummy")
+                ]
+            )
+            """,
+            additionalHeaders: [
+                ("Content-Type", "text/x-swift"),
+                ("Content-Disposition", "attachment; filename=\"Package.swift\"")
+            ]
+        ))
+    }
 }
 
 let app = Vapor.Application()
 
 app.get(":scope", ":name", use: API.listPackageReleases)
 app.get(":scope", ":name", ":version", use: API.getReleaseDetails)
+app.get(":scope", ":name", ":version", "Package.swift", use: API.getReleaseManifest)
 
 // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
 try app.run()
