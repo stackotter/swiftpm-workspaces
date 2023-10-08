@@ -5,10 +5,11 @@ import PackageDescription
 let package = Package(
     name: "GitPackageRegistry",
     platforms: [
-        .macOS(.v10_15)
+        .macOS(.v11)
     ],
     dependencies: [
         .package(url: "https://github.com/vapor/vapor", from: "4.76.0"),
+        .package(url: "https://github.com/mxcl/Version", from: "2.0.1"),
     ],
     targets: [
         .executableTarget(
@@ -18,6 +19,7 @@ let package = Package(
                     name: "Vapor",
                     package: "vapor"
                 ),
+                "Version",
             ]
         ),
     ]

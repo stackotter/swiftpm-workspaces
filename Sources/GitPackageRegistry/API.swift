@@ -96,7 +96,53 @@ struct NoLinks: ToLinks {
 
 extension Data: Content {}
 
-enum API {
+extension String: CodingKey {
+    public init?(stringValue: String) {
+        self = stringValue
+    }
+
+    public init?(intValue: Int) {
+        return nil
+    }
+
+    public var stringValue: String {
+        self
+    }
+
+    public var intValue: Int? {
+        nil
+    }
+}
+
+/// Conforms to the Swift Package Registry specification.
+///
+/// See https://github.com/apple/swift-package-manager/blob/main/Documentation/PackageRegistry/Registry.md
+struct API {
+    var registry: Registry
+
+    init(_ registry: Registry) {
+        self.registry = registry
+    }
+
+    func registerRoutes(with app: Application) {
+        // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
+        app.get(":scope", ":name", use: listPackageReleases)
+        app.get(":scope", ":name", ":version", use: getReleaseDetailsOrSourceArchive)
+        app.get(":scope", ":name", ":version", "Package.swift", use: getReleaseManifest)
+        app.get("identifiers", use: getPackageIdentifiers)
+        app.put(":scope", ":name", ":version", use: unimplemented)
+    }
+}
+
+/// Request types.
+extension API {
+    struct IdentifiersQuery: Content {
+        var url: String
+    }
+}
+
+/// Response types
+extension API {
     struct Problem: Content {
         var status: Int
         var title: String
@@ -111,10 +157,31 @@ enum API {
     }
 
     struct Releases: Content {
-        var releases: [String: ReleaseSummary]
+        /// Stored as an array instead of a dictionary to maintain ordering.
+        var releases: [(String, ReleaseSummary)]
 
-        init(_ releases: [String: ReleaseSummary]) {
+        init(_ releases: [(String, ReleaseSummary)]) {
             self.releases = releases
+        }
+
+        /// Creates a list of releases with no metadata.
+        init(_ releases: [String]) {
+            self.releases = releases.map { release in
+                (release, ReleaseSummary())
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            releases = try decoder.singleValueContainer()
+                .decode([String: ReleaseSummary].self)
+                .map { ($0, $1) }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: String.self)
+            for (version, summary) in releases {
+                try container.encode(summary, forKey: version)
+            }
         }
     }
 
@@ -141,7 +208,10 @@ enum API {
     struct Identifiers: Content {
         var identifiers: [String]
     }
+}
 
+/// Response helper methods.
+extension API {
     static func jsonResponse(_ status: HTTPResponseStatus = .accepted, _ object: Any) -> Response {
         var headers = HTTPHeaders()
         headers.add(name: .contentType, value: "application/json")
@@ -157,28 +227,42 @@ enum API {
         )
     }
 
+    static func notFound<T>(_ details: String) -> Result<T, APIError> {
+        .failure(APIError(.notFound, details))
+    }
+
     static func badRequest<T>(_ details: String) -> Result<T, APIError> {
         .failure(APIError(.badRequest, details))
     }
 
-    static func listPackageReleases(_ req: Request) -> APIResult<Releases, [String: String?]> {
+    static func internalServerError<T>(_ details: String) -> Result<T, APIError> {
+        .failure(APIError(.internalServerError, details))
+    }
+}
+
+/// Route handlers.
+extension API {
+    func listPackageReleases(_ req: Request) -> APIResult<Releases, [String: String?]> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
-    
-        guard let package = registry.package(scope, name) else {
-            return badRequest("Non-existent package")
+
+        guard let repository = registry.repository(scope, name) else {
+            return Self.notFound("Non-existent package")
         }
 
-        var releases: [String: ReleaseSummary] = [:]
-        for release in package.releases {
-            releases[release] = ReleaseSummary()
+        let releases: [String]
+        switch repository.listReleases() {
+            case let .failure(error):
+                return Self.internalServerError(error.localizedDescription)
+            case let .success(versions):
+                releases = versions
         }
 
         return .success(APIResponse(
             Releases(releases),
             links: [
-                "latest-version": package.releases.last,
-                "canonical": package.repository,
+                "latest-version": releases.last,
+                "canonical": repository.remoteRepository.absoluteString,
                 "payment": "https://github.com/sponsors/stackotter"
             ]
         ))
@@ -187,7 +271,7 @@ enum API {
     /// Ideally this would be two separate routes but Vapor doesn't really let that
     /// happen in a nice way since the API spec is a bit weird (Vapor doesn't have a
     /// way to express that /0.1.0 and /0.1.0.zip should be routed differently).
-    static func getReleaseDetailsOrSourceArchive(_ req: Request) -> EventLoopFuture<Response> {
+    func getReleaseDetailsOrSourceArchive(_ req: Request) -> EventLoopFuture<Response> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
         let version = req.parameters.get("version")!
@@ -200,11 +284,16 @@ enum API {
         }
     }
 
-    static func getSourceArchive(
+    func getSourceArchive(
         _ scope: String, _ name: String, _ version: String
     ) -> APIResult<Data, NoLinks> {
-        guard registry.releaseExists(scope, name, version) else {
-            return .failure(APIError(.notFound, "non-existent release"))
+        switch registry.releaseExists(scope, name, version) {
+            case .failure(.noSuchPackage):
+                return Self.notFound("non-existent release")
+            case let .failure(error):
+                return Self.internalServerError(error.localizedDescription)
+            default:
+                break
         }
         
         return .success(APIResponse(
@@ -216,15 +305,21 @@ enum API {
         ))
     }
 
-    static func getReleaseDetails(
+    func getReleaseDetails(
         _ scope: String, _ name: String, _ version: String
     ) -> APIResult<Release, [String: String?]> {
-        guard let package = registry.package(scope, name) else {
-            return .failure(APIError(.notFound, "non-existent package"))
+        let releases: Registry.Releases
+        switch registry.releases(scope, name) {
+            case .failure(.noSuchPackage):
+                return Self.notFound("non-existent package")
+            case let .failure(error):
+                return Self.internalServerError(error.localizedDescription)
+            case let .success(versions):
+                releases = versions
         }
 
-        guard package.releases.contains(version) else {
-            return .failure(APIError(.notFound, "non-existent release"))
+        guard releases.contains(version) else {
+            return Self.notFound("non-existent release")
         }
         
         // Get release details
@@ -243,49 +338,52 @@ enum API {
                 publishedAt: nil
             ),
             links: [
-                "latest-version": package.releases.last,
-                "successor-version": package.releaseAfter(version),
-                "predecessor-version": package.releaseBefore(version)
+                "latest-version": releases.latest,
+                "successor-version": releases.releaseAfter(version),
+                "predecessor-version": releases.releaseBefore(version)
             ]
         ))
     }
 
-    static func getReleaseManifest(_ req: Request) -> APIResult<Data, NoLinks> {
+    func getReleaseManifest(_ req: Request) -> APIResult<Data, NoLinks> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
         let version = req.parameters.get("version")!
 
-            guard registry.releaseExists(scope, name, version) else {
-                return .failure(APIError(.notFound, "non-existent release"))
-            }
+        switch registry.releaseExists(scope, name, version) {
+            case .failure(.noSuchPackage):
+                return Self.notFound("non-existent package")
+            case let .failure(error):
+                return Self.internalServerError(error.localizedDescription)
+            case .success(false):
+                return Self.notFound("non-existent release")
+            default:
+                break
+        }
 
-            return .success(APIResponse(
-                """
-                // swift-tools-version: 5.9
+        return .success(APIResponse(
+            """
+            // swift-tools-version: 5.9
 
-                import PackageDescription
+            import PackageDescription
 
-                let package = Package(
-                    name: "dummy",
-                    targets: [
-                        .executableTarget(name: "Dummy")
-                    ]
-                )
-                """.data(using: .utf8)!,
-                additionalHeaders: [
-                    ("Content-Type", "text/x-swift"),
-                    ("Content-Disposition", "attachment; filename=\"Package.swift\"")
+            let package = Package(
+                name: "dummy",
+                targets: [
+                    .executableTarget(name: "Dummy")
                 ]
-            ))
+            )
+            """.data(using: .utf8)!,
+            additionalHeaders: [
+                ("Content-Type", "text/x-swift"),
+                ("Content-Disposition", "attachment; filename=\"Package.swift\"")
+            ]
+        ))
     }
 
-    struct IdentifiersQuery: Content {
-        var url: String
-    }
-
-    static func getPackageIdentifiers(_ req: Request) -> APIResult<Identifiers, NoLinks> {
+    func getPackageIdentifiers(_ req: Request) -> APIResult<Identifiers, NoLinks> {
         guard let query = try? req.query.get(IdentifiersQuery.self) else {
-            return badRequest("missing 'url' query parameter")
+            return Self.badRequest("missing 'url' query parameter")
         }
 
         let url = if query.url.hasSuffix(".git") {
@@ -297,7 +395,7 @@ enum API {
         var identifiers: [String] = []
         for (scopeName, scope) in registry.scopes {
             for (packageName, package) in scope.packages {
-                if package.path == "/" && package.repository == url {
+                if package.path == "/" && package.repository.absoluteString == url {
                     identifiers.append("\(scopeName).\(packageName)")
                 }
             }
@@ -312,7 +410,7 @@ enum API {
         }
     }
 
-    static func unimplemented(_ req: Request) -> APIError {
+    func unimplemented(_ req: Request) -> APIError {
         APIError(.unauthorized, "unimplemented")
     }
 }
