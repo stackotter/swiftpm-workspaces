@@ -43,11 +43,13 @@ struct Repository {
         }
     }
 
-    /// Creates an archive and returns its checksum
-    func archive(to archivePath: URL) -> Result<(), GitError> {
+    /// Creates an archive and returns its checksum.
+    /// - Parameter relativePath: The path to the package to archive relative to its containing repository.
+    func archive(_ relativePath: String, to archivePath: URL) -> Result<(), GitError> {
         runCommand(
             "swift",
-            ["package", "archive-source", "-o", archivePath.path]
+            ["package", "archive-source", "-o", archivePath.path],
+            workingDirectory: localRepository.appendingPathComponent(relativePath)
         ).map(Self.toVoid)
     }
 }

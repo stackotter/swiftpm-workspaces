@@ -103,7 +103,7 @@ struct Registry {
                 repository.checkout(tag).mapError(RegistryError.gitError)
             }
             .flatMap { _ in
-                repository.archive(to: archivePath).mapError(RegistryError.gitError)
+                repository.archive(package.path, to: archivePath).mapError(RegistryError.gitError)
             }
             .flatMap { _ in
                 checksum(of: archivePath)
