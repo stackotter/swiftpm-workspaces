@@ -136,7 +136,7 @@ struct Problem: Content {
     var detail: String
 }
 
-struct Release: Content {
+struct ReleaseSummary: Content {
     /// If not provided, the client will infer it.
     var url: String?
     /// If provided, the client will ignore the release during package resolution.
@@ -144,40 +144,16 @@ struct Release: Content {
 }
 
 struct Releases: Content {
-    var releases: [String: Release]
+    var releases: [String: ReleaseSummary]
 
-    init(_ releases: [String: Release]) {
+    init(_ releases: [String: ReleaseSummary]) {
         self.releases = releases
     }
 }
 
-struct ReleasesResponse: ResponseEncodable {
-    var releases: Releases
-    var latestVersion: String?
-    var sourceRepository: String?
-    var payment: String?
+typealias APIResult<T: Content, L: ToLinks> = Result<APIResponse<T, L>, APIError>
 
-    func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
-        let body = try! JSONEncoder().encode(releases)
-
-        let links: [String: String] = [
-            "latest-version": latestVersion,
-            "canonical": sourceRepository,
-            "payment": payment
-        ].compactMapValues({ $0 })
-
-        let linkContent = links.map { key, link in
-            "<\(link)>; rel=\"\(key)\""
-        }.joined(separator: ", ")
-
-        return request.eventLoop.makeSucceededFuture(Response(
-            headers: ["Link": linkContent],
-            body: .init(data: body)
-        ))
-    }
-}
-
-app.get(":scope", ":name") { req -> Result<ReleasesResponse, APIError> in
+app.get(":scope", ":name") { req -> APIResult<Releases, [String: String?]> in
     let scope = req.parameters.get("scope")!
     let name = req.parameters.get("name")!
 
@@ -190,11 +166,95 @@ app.get(":scope", ":name") { req -> Result<ReleasesResponse, APIError> in
         return badRequest("Non-existent package")
     }
 
-    return .success(ReleasesResponse(
-        releases: Releases(["0.1.0": Release()]),
-        latestVersion: "0.1.0",
-        sourceRepository: package.repository,
-        payment: "https://github.com/sponsors/stackotter"
+    return .success(APIResponse(
+        Releases(["0.1.0": ReleaseSummary()]),
+        links: [
+            "latest-version": "0.1.0",
+            "canonical": package.repository,
+            "payment": "https://github.com/sponsors/stackotter"
+        ]
+    ))
+}
+
+struct Resource: Content {
+    var name: String
+    var type: String
+    var checksum: String
+    var signing: Signing
+}
+
+extension Resource {
+    struct Signing: Content {
+        var signatureBase64Encoded: String
+        var signatureFormat: String
+    }
+}
+
+struct Release: Content {
+    var id: String
+    var version: String
+    var resources: [Resource]
+    var metadata: [String: String]
+    var publishedAt: Date?
+}
+
+protocol ToLinks {
+    var links: [(relation: String, link: String)] { get }
+}
+
+extension Dictionary<String, String?>: ToLinks {
+    var links: [(relation: String, link: String)] {
+        compactMapValues { $0 }.map { ($0, $1) }
+    }
+}
+
+struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable {
+    var content: ResponseContent
+    var links: Links?
+
+    init(_ content: ResponseContent, links: Links? = nil) {
+        self.content = content
+        self.links = links
+    }
+
+    func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
+        var headers: [(String, String)] = []
+        if let links {
+            let linkContent = links.links.map { (key, link) in
+                "<\(link)>; rel=\"\(key)\""
+            }.joined(separator: ", ")
+            headers.append(("Link", linkContent))
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let body = try! encoder.encode(content)
+
+        return request.eventLoop.makeSucceededFuture(Response(
+            headers: HTTPHeaders(headers),
+            body: Response.Body(data: body)
+        ))
+    }
+}
+
+app.get(":scope", ":name", ":version") { req -> APIResult<Release, [String: String?]> in
+    let scope = req.parameters.get("scope")!
+    let name = req.parameters.get("name")!
+    let version = req.parameters.get("version")!
+
+    return .success(APIResponse(
+        Release(
+            id: "\(scope).\(name)",
+            version: version,
+            resources: [],
+            metadata: [:],
+            publishedAt: Date()
+        ),
+        links: [
+            "latest-version": "0.1.0",
+            "successor-version": nil,
+            "predecessor-version": nil
+        ]
     ))
 }
 
