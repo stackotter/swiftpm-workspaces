@@ -129,6 +129,8 @@ struct NoLinks: ToLinks {
     }
 }
 
+extension Data: Content {}
+
 struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable {
     var content: ResponseContent
     var links: Links?
@@ -155,6 +157,8 @@ struct APIResponse<ResponseContent: Content, Links: ToLinks>: ResponseEncodable 
 
         if let content = content as? String {
             body = Response.Body(string: content)
+        } else if let content = content as? Data {
+            body = Response.Body(data: content)
         } else {
             headers.append(("Content-Type", "application/json"))
             let encoder = JSONEncoder()
@@ -236,12 +240,35 @@ enum API {
         ))
     }
 
-    static func getReleaseDetails(_ req: Request) -> APIResult<Release, [String: String?]> {
+    /// Ideally this would be two separate routes but Vapor doesn't really let that
+    /// happen in a nice way since the API spec is a bit weird (Vapor doesn't have a
+    /// way to express that /0.1.0 and /0.1.0.zip should be routed differently).
+    static func getReleaseDetailsOrSourceArchive(_ req: Request) -> EventLoopFuture<Response> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
         let version = req.parameters.get("version")!
 
+        if version.hasSuffix(".zip") {
+            let version = String(version.dropLast(4))
+            return getSourceArchive(scope, name, version).encodeResponse(for: req)
+        } else {
+            return getReleaseDetails(scope, name, version).encodeResponse(for: req)
+        }
+    }
 
+    static func getSourceArchive(
+        _ scope: String, _ name: String, _ version: String
+    ) -> APIResult<Data, NoLinks> {
+        guard registry.releaseExists(scope, name, version) else {
+            return .failure(APIError(.notFound, "non-existent release"))
+        }
+        
+        return .failure(APIError(.internalServerError, "not implemented"))
+    }
+
+    static func getReleaseDetails(
+        _ scope: String, _ name: String, _ version: String
+    ) -> APIResult<Release, [String: String?]> {
         guard let package = registry.package(scope, name) else {
             return .failure(APIError(.notFound, "non-existent package"))
         }
@@ -249,7 +276,8 @@ enum API {
         guard package.releases.contains(version) else {
             return .failure(APIError(.notFound, "non-existent release"))
         }
-
+        
+        // Get release details
         return .success(APIResponse(
             Release(
                 id: "\(scope).\(name)",
@@ -272,40 +300,40 @@ enum API {
         ))
     }
 
-    static func getReleaseManifest(_ req: Request) -> APIResult<String, NoLinks> {
+    static func getReleaseManifest(_ req: Request) -> APIResult<Data, NoLinks> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
         let version = req.parameters.get("version")!
 
-        guard registry.releaseExists(scope, name, version) else {
-            return .failure(APIError(.notFound, "non-existent release"))
-        }
+            guard registry.releaseExists(scope, name, version) else {
+                return .failure(APIError(.notFound, "non-existent release"))
+            }
 
-        return .success(APIResponse(
-            """
-            // swift-tools-version: 5.9
+            return .success(APIResponse(
+                """
+                // swift-tools-version: 5.9
 
-            import PackageDescription
+                import PackageDescription
 
-            let package = Package(
-                name: "dummy",
-                targets: [
-                    .executableTarget(name: "Dummy")
+                let package = Package(
+                    name: "dummy",
+                    targets: [
+                        .executableTarget(name: "Dummy")
+                    ]
+                )
+                """.data(using: .utf8)!,
+                additionalHeaders: [
+                    ("Content-Type", "text/x-swift"),
+                    ("Content-Disposition", "attachment; filename=\"Package.swift\"")
                 ]
-            )
-            """,
-            additionalHeaders: [
-                ("Content-Type", "text/x-swift"),
-                ("Content-Disposition", "attachment; filename=\"Package.swift\"")
-            ]
-        ))
+            ))
     }
 }
 
 let app = Vapor.Application()
 
 app.get(":scope", ":name", use: API.listPackageReleases)
-app.get(":scope", ":name", ":version", use: API.getReleaseDetails)
+app.get(":scope", ":name", ":version", use: API.getReleaseDetailsOrSourceArchive)
 app.get(":scope", ":name", ":version", "Package.swift", use: API.getReleaseManifest)
 
 // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
