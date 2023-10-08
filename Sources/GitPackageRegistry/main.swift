@@ -64,7 +64,7 @@ struct Registry {
 }
 
 var registry = Registry(scopes: [
-    "scui": Scope(packages: [
+    "stackotter": Scope(packages: [
         "swift-cross-ui": Package(
             path: "/",
             repository: "https://github.com/stackotter/swift-cross-ui",
@@ -217,6 +217,10 @@ enum API {
         var publishedAt: Date?
     }
 
+    struct Identifiers: Content {
+        var identifiers: [String]
+    }
+
     static func listPackageReleases(_ req: Request) -> APIResult<Releases, [String: String?]> {
         let scope = req.parameters.get("scope")!
         let name = req.parameters.get("name")!
@@ -263,7 +267,13 @@ enum API {
             return .failure(APIError(.notFound, "non-existent release"))
         }
         
-        return .failure(APIError(.internalServerError, "not implemented"))
+        return .success(APIResponse(
+            "dummy".data(using: .utf8)!,
+            additionalHeaders: [
+                ("Content-Type", "application/zip"),
+                ("Cache-Control", "public, immutable"),
+            ]
+        ))
     }
 
     static func getReleaseDetails(
@@ -328,6 +338,39 @@ enum API {
                 ]
             ))
     }
+
+    struct IdentifiersQuery: Content {
+        var url: String
+    }
+
+    static func getPackageIdentifiers(_ req: Request) -> APIResult<Identifiers, NoLinks> {
+        guard let query = try? req.query.get(IdentifiersQuery.self) else {
+            return .failure(APIError(.badRequest, "missing 'url' query parameter"))
+        }
+
+        let url = if query.url.hasSuffix(".git") {
+            String(query.url.dropLast(4))
+        } else {
+            query.url
+        }
+
+        var identifiers: [String] = []
+        for (scopeName, scope) in registry.scopes {
+            for (packageName, package) in scope.packages {
+                if package.path == "/" && package.repository == url {
+                    identifiers.append("\(scopeName).\(packageName)")
+                }
+            }
+        }
+
+        if identifiers.isEmpty {
+            return .failure(APIError(.notFound, "no matching packages"))
+        } else {
+            return .success(APIResponse(Identifiers(
+                identifiers: identifiers
+            )))
+        }
+    }
 }
 
 let app = Vapor.Application()
@@ -335,6 +378,7 @@ let app = Vapor.Application()
 app.get(":scope", ":name", use: API.listPackageReleases)
 app.get(":scope", ":name", ":version", use: API.getReleaseDetailsOrSourceArchive)
 app.get(":scope", ":name", ":version", "Package.swift", use: API.getReleaseManifest)
+app.get("identifiers", use: API.getPackageIdentifiers)
 
 // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
 try app.run()
