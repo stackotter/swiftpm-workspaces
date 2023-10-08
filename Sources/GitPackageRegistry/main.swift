@@ -1,7 +1,7 @@
 import Foundation
 import Vapor
 
-public struct APIError: LocalizedError {
+public struct APIError: LocalizedError, ResponseEncodable {
     var status: HTTPResponseStatus
     var details: String
 
@@ -12,6 +12,15 @@ public struct APIError: LocalizedError {
 
     public var errorDescription: String? {
         details
+    }
+
+    public func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
+        return request.eventLoop.makeSucceededFuture(jsonResponse(
+            status,
+            [
+                "details": details
+            ]
+        ))
     }
 }
 
@@ -93,18 +102,13 @@ func jsonResponse(_ status: HTTPResponseStatus = .accepted, _ object: Any) -> Re
     )
 }
 
-extension Result: ResponseEncodable where Success: ResponseEncodable, Failure == APIError {
+extension Result: ResponseEncodable where Success: ResponseEncodable, Failure: ResponseEncodable {
     public func encodeResponse(for request: Request) -> EventLoopFuture<Response> {
         switch self {
             case .success(let value):
                 return value.encodeResponse(for: request)
             case .failure(let error):
-                return request.eventLoop.makeSucceededFuture(jsonResponse(
-                    error.status,
-                    [
-                        "details": error.details
-                    ]
-                ))
+                return error.encodeResponse(for: request)
         }
     }
 }
@@ -371,6 +375,10 @@ enum API {
             )))
         }
     }
+
+    static func unimplemented(_ req: Request) -> APIError {
+        APIError(.unauthorized, "unimplemented")
+    }
 }
 
 let app = Vapor.Application()
@@ -379,6 +387,7 @@ app.get(":scope", ":name", use: API.listPackageReleases)
 app.get(":scope", ":name", ":version", use: API.getReleaseDetailsOrSourceArchive)
 app.get(":scope", ":name", ":version", "Package.swift", use: API.getReleaseManifest)
 app.get("identifiers", use: API.getPackageIdentifiers)
+app.put(":scope", ":name", ":version", use: API.unimplemented)
 
 // TODO: All routes should allow `.json` to be appended to the URL for whatever reason
 try app.run()
