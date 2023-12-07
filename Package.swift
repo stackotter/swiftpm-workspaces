@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "GitPackageRegistry",
+    name: "SwiftPMWorkspaces",
     platforms: [
         .macOS(.v11)
     ],
